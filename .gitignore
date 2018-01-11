@@ -25,3 +25,10 @@ ehthumbs.db
 Icon?
 Thumbs.db
 *.swp
+
+# person data
+weight/
+train_data/
+person_data/
+trained_weight/
+
