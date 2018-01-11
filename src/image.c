@@ -4,6 +4,10 @@
 #include "cuda.h"
 #include <stdio.h>
 #include <math.h>
+#include <time.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -13,6 +17,9 @@
 int windows = 0;
 
 float colors[6][3] = { {1,0,1}, {0,0,1},{0,1,1},{0,1,0},{1,1,0},{1,0,0} };
+
+static int frame_count = 0;
+static int frame_save_count = 0;
 
 float get_color(int c, int x, int max)
 {
@@ -236,8 +243,35 @@ image **load_alphabet()
 }
 
 void draw_detections(image im, int num, float thresh, box *boxes, float **probs, float **masks, char **names, image **alphabet, int classes)
-{
+{  
     int i,j;
+    int only_person = 1;
+    int extract_person = 1;
+    char json_save_dir[60] = "./person_data/log/";
+    char img_save_dir[60] = "./person_data/img/";
+    char frame_save_dir[60] = "./person_data/frame/";
+    int extract_count = 0;
+    int shot_frquency = 90;
+    FILE *fptr_set[100];
+    float prob[100];
+    int loc[100][4];
+
+    if(extract_person & only_person){
+        // create folder
+        struct stat st = {0};
+        if (stat("./person_data", &st) == -1) {
+            mkdir("./person_data", 0700);
+            if(stat(json_save_dir, &st) == -1)
+                mkdir(json_save_dir,0700);
+            if(stat(img_save_dir, &st) == -1)
+                mkdir(img_save_dir,0700);
+            if(stat(frame_save_dir, &st) == -1)
+                mkdir(frame_save_dir,0700);
+        }
+
+        if(frame_count >= shot_frquency) frame_count=0;
+
+    }
 
     for(i = 0; i < num; ++i){
         char labelstr[4096] = {0};
@@ -254,9 +288,11 @@ void draw_detections(image im, int num, float thresh, box *boxes, float **probs,
                 printf("%s: %.0f%%\n", names[j], probs[i][j]*100);
             }
         }
-        if(class >= 0){
-            int width = im.h * .006;
 
+        if(class >= 0){
+            // only detect person
+            if(only_person && class!=14) {continue;}
+            int width = im.h * .006;
             /*
                if(0){
                width = pow(prob, 1./2.)*10+1;
@@ -264,7 +300,7 @@ void draw_detections(image im, int num, float thresh, box *boxes, float **probs,
                }
              */
 
-            //printf("%d %s: %.0f%%\n", i, names[class], prob*100);
+            // printf("%d %s: %.0f%%\n", i, names[class], prob*100);
             int offset = class*123457 % classes;
             float red = get_color(2,offset,classes);
             float green = get_color(1,offset,classes);
@@ -288,12 +324,42 @@ void draw_detections(image im, int num, float thresh, box *boxes, float **probs,
             if(top < 0) top = 0;
             if(bot > im.h-1) bot = im.h-1;
 
+            /* buff information */
+            if(extract_person && only_person && frame_count == 0){
+                /* buff box info */
+                loc[extract_count][0] = top;
+                loc[extract_count][1] = left;
+                loc[extract_count][2] = bot;
+                loc[extract_count][3] = right;
+                prob[extract_count] = probs[i][j];
+
+                /*crop out person*/
+                #ifdef OPENCV
+                    int region_h = bot - top;
+                    int region_w = right - left;
+                    image extract_region;
+                    extract_region = crop_image(im,left,top,region_w,region_h);
+                    
+                    char save_name[20];
+                    sprintf(save_name,"person_%d_%d",frame_save_count,extract_count);
+                    char img_save_path[60];
+                    strcpy(img_save_path,img_save_dir);
+                    strcat(img_save_path,save_name);
+                    printf("Save extract_region to %s\n",img_save_path);
+                    save_image_jpg(extract_region,img_save_path);
+                    free_image(extract_region);
+                #endif
+                extract_count += 1;
+            }
+
+            /* draw bounding region */
             draw_box_width(im, left, top, right, bot, width, red, green, blue);
             if (alphabet) {
                 image label = get_label(alphabet, labelstr, (im.h*.03)/10);
                 draw_label(im, top + width, left, label, rgb);
                 free_image(label);
             }
+
             if (masks){
                 image mask = float_to_image(14, 14, 1, masks[i]);
                 image resized_mask = resize_image(mask, b.w*im.w, b.h*im.h);
@@ -303,8 +369,59 @@ void draw_detections(image im, int num, float thresh, box *boxes, float **probs,
                 free_image(resized_mask);
                 free_image(tmask);
             }
+
+            
+            if(extract_person && only_person && frame_count == 0){
+                /* get time info */ 
+                time_t extract_time;
+                char buffer_time[26];
+                time(&extract_time);
+                struct tm* tm_info;
+                tm_info = localtime(&extract_time);
+                strftime(buffer_time, 26, "%Y-%m-%d %H:%M:%S", tm_info);
+
+                /* write log to json*/         
+                int idx = 0;
+                for(idx=0; idx<extract_count; ++idx){
+                    // get buffed location
+                    int top_tmp = loc[idx][0];
+                    int left_tmp = loc[idx][1];
+                    int bot_tmp = loc[idx][2];
+                    int right_tmp  = loc[idx][3];
+                    float score = prob[idx];
+                    
+                    FILE *fptr;
+                    char save_name[20];
+                    sprintf(save_name,"person_%d_%d",frame_save_count,idx);
+                    char json_save_path[60];
+                    strcpy(json_save_path,json_save_dir);
+                    strcat(json_save_path,save_name);
+                    strcat(json_save_path,".json");
+
+                    fptr= fopen(json_save_path,"w");
+                    fprintf(fptr, "{\n");
+                    fprintf(fptr, "\tclass: person\n");
+                    fprintf(fptr, "\ttimeStamp: %s\n",buffer_time);
+                    fprintf(fptr, "\tbbox: (%d,%d,%d,%d,%.2f)\n",top,left,bot,right,score);
+                    fprintf(fptr, "\tPeopleCount: %d\n",extract_count);
+                    fprintf(fptr, "}\n");
+                    fclose(fptr);
+                }
+
+                /* save frame */
+                char frame_save_path[60];
+                char buffer_name[20];
+                sprintf(buffer_name,"frame_%d",frame_save_count);
+                strcpy(frame_save_path,frame_save_dir);
+                strcat(frame_save_path,buffer_name);
+                save_image_jpg(im,frame_save_path); 
+                frame_save_count += 1;
+            }
+
         }
+    
     }
+    frame_count += 1;
 }
 
 void transpose_image(image im)
