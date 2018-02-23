@@ -20,6 +20,8 @@ float colors[6][3] = { {1,0,1}, {0,0,1},{0,1,1},{0,1,0},{1,1,0},{1,0,0} };
 
 static int frame_count = 0;
 static int frame_save_count = 0;
+static int no_person_count = 0;
+static int low_bps = 0;
 
 float get_color(int c, int x, int max)
 {
@@ -246,6 +248,7 @@ void draw_detections(image im, int num, float thresh, box *boxes, float **probs,
 {  
     int i,j;
     int extract_person = 1;
+    int change_br = 1;
     char json_save_dir[60] = "./person_data/log/";
     char img_save_dir[60] = "./person_data/img/";
     char frame_save_dir[60] = "./person_data/frame/";
@@ -422,6 +425,27 @@ void draw_detections(image im, int num, float thresh, box *boxes, float **probs,
 
     }
     frame_count += 1;
+    /* change Bitrate */
+    int no_person_count_thresh = 50;
+    if(!detect_person){
+        no_person_count += 1; 
+    }
+    else{
+        no_person_count = 0;
+    }
+    // change bitrate through system and curl
+    if(change_br && no_person_count >= no_person_count_thresh){
+        low_bps = 1;
+        system("curl --digest -u admin:123456 http://1/stream.cgi/ -H \"Content-Type: application/json\" -X POST -d '{\"command\":\"setParam\",\"stream\":\"profile1\",\"data\":{\"bitrateMode\":\"CBR\",\"bitRate\":\"1024576\"}}'");
+        printf("change bitrate to 1Mbps\n");
+    }
+    if(change_br && detect_person && low_bps){
+        low_bps = 0;
+        system("curl --digest -u admin:123456 http://1/stream.cgi/ -H \"Content-Type: application/json\" -X POST -d '{\"command\":\"setParam\",\"stream\":\"profile1\",\"data\":{\"bitrateMode\":\"CBR\",\"bitRate\":\"4096576\"}}'");
+        printf("change bitrate to 4Mbps\n");
+    }
+
+
 }
 
 void transpose_image(image im)
